@@ -34,8 +34,8 @@ if __name__ == "__main__":
           tensorized_example = model.tensorize_example(example, is_training=False)
           feed_dict = {i:t for i,t in zip(model.input_tensors, tensorized_example)}
           starts, ends, candidate_scores, top_span_starts, top_span_ends, top_antecedents, top_antecedent_scores = session.run(model.predictions, feed_dict=feed_dict)
-          score_map = {}
-          for (start, end, score) in zip(starts, ends, candidate_scores):
+          spans = []
+          for (start, end) in zip(top_span_starts, top_span_ends):
 
             # Only for BERT ones
             if "subtoken_map" in example:
@@ -45,13 +45,13 @@ if __name__ == "__main__":
               token_start = start
               token_end = end
 
-            score_map[(token_start, token_end)] = score
+            spans.append((token_start, token_end))
 
           output_obj = {
-            example["doc_key"] : [
-                {
-                    "start": token_start,
-                    "end": token_end,}for (token_start, token_end), score in score_map.items()]
+            example["doc_key"] : [{
+                                    "start": token_start,
+                                    "end": token_end
+                                  } for (token_start, token_end) in spans]
           }
 
           output_file.write(json.dumps(output_obj) + "\n")

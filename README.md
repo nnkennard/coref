@@ -11,12 +11,12 @@ The model architecture itself is an extension of the [e2e-coref](https://github.
 ## Pretrained Coreference Models
 Please download following files to use the *pretrained coreference models* on your data. If you want to train your own coreference model, you can skip this step.
 
-| Model          | F1 (%) |
-| -------------- |:------:|
-| BERT-base      | 73.9   |
-| SpanBERT-base  | 77.7   |
-| BERT-large     | 76.9   |
-| SpanBERT-large | 79.6   |
+| Model          | `<model_name>` for download | F1 (%) |
+| -------------- | --------------------------- |:------:|
+| BERT-base      | bert_base                   | 73.9   |
+| SpanBERT-base  | spanbert_base               | 77.7   |
+| BERT-large     | bert_large                  | 76.9   |
+| SpanBERT-large | spanbert_large              | 79.6   |
 
 `./download_pretrained.sh <model_name>` (e.g,: bert_base, bert_large, spanbert_base, spanbert_large; assumes that `$data_dir` is set) This downloads BERT/SpanBERT models finetuned on OntoNotes. The original/non-finetuned version of SpanBERT weights is available in this [repository](https://github.com/facebookresearch/SpanBERT). You can use these models with `evaluate.py` and `predict.py` (the section on Batched Prediction Instructions)
 
@@ -46,7 +46,7 @@ This assumes access to OntoNotes 5.0.
   "sentences": [["[CLS]", "subword1", "##subword1", ".", "[SEP]"]], # list of BERT tokenized segments. Each segment should be less than the max_segment_len in your config
   "speakers": [["[SPL]", "-", "-", "-", "[SPL]"]], # speaker information for each subword in sentences
   "sentence_map": [0, 0, 0, 0, 0], # flat list where each element is the sentence index of the subwords
-  "subtoken_map": [0, 0, 0, 1, 2]  # flat list containing original word index for each subword. [CLS]  and the first word share the same index
+  "subtoken_map": [0, 0, 0, 1, 1]  # flat list containing original word index for each subword. [CLS]  and the first word share the same index
 }
 ```
   * `clusters` should be left empty and is only used for evaluation purposes.
@@ -76,6 +76,10 @@ If you have access to a slurm GPU cluster, you could use the following for set o
 * `grep "\{best\}" experiments.conf | cut -d = -f 1 > torun.txt`: This creates a list of configs that can be used by the script to launch jobs. You can use a regexp to restrict the list of configs. For example, `grep "\{best\}" experiments.conf | grep "sl512*" | cut -d = -f 1 > torun.txt` will select configs with `max_segment_len = 512`.
 * `python tune.py --data_dir <coref_data_dir> --run_jobs`: This launches jobs from torun.txt on the slurm cluster.
 
+### Miscellaneous
+* If you like using Colab, check out Jonathan K. Kummerfeld's [notebook](https://colab.research.google.com/drive/1SlERO9Uc9541qv6yH26LJz5IM9j7YVra#scrollTo=H0xPknceFORt).
+* Some `g++` versions may not play nicely with this repo. If you get this:
+`tensorflow.python.framework.errors_impl.NotFoundError: ./coref_kernels.so: undefined symbol: _ZN10tensorflow12OpDefBuilder4AttrESs`, try removing the flag `-D_GLIBCXX_USE_CXX11_ABI=0` from `setup_all.sh`. Thanks to Naman Jain for the [solution](https://github.com/mandarjoshi90/coref/issues/29).
 
 ## Citations
 If you use the pretrained *BERT*-based coreference model (or this implementation), please cite the paper, [BERT for Coreference Resolution: Baselines and Analysis](https://arxiv.org/abs/1908.09091).

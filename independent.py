@@ -43,6 +43,7 @@ class CorefModel(object):
     input_props.append((tf.bool, [])) # Is training.
     input_props.append((tf.int32, [None])) # Gold starts.
     input_props.append((tf.int32, [None])) # Gold ends.
+    input_props.append((tf.int32, [None])) # Candidate mention labels
     input_props.append((tf.int32, [None])) # Cluster ids.
     input_props.append((tf.int32, [None])) # Sentence Map
 
@@ -168,8 +169,24 @@ class CorefModel(object):
     # assert num_words == len(speakers), (num_words, len(speakers))
     speaker_dict = self.get_speaker_dict(util.flatten(speakers))
     sentence_map = example['sentence_map']
+    
+    flattened_sentence_indices = sentence_map
+    
+    candidate_starts = tf.tile(tf.expand_dims(tf.range(num_words), 1), [1, self.max_span_width]) # [num_words, max_span_width]
+    candidate_ends = candidate_starts + tf.expand_dims(tf.range(self.max_span_width), 0) # [num_words, max_span_width]
+    candidate_start_sentence_indices = tf.gather(flattened_sentence_indices, candidate_starts) # [num_words, max_span_width]
+    candidate_end_sentence_indices = tf.gather(flattened_sentence_indices, tf.minimum(candidate_ends, num_words - 1)) # [num_words, max_span_width]
 
-
+    candidate_mask = tf.logical_and(candidate_ends < num_words, tf.equal(candidate_start_sentence_indices, candidate_end_sentence_indices)) # [num_words, max_span_width]
+    flattened_candidate_mask = tf.reshape(candidate_mask, [-1]) # [num_words * max_span_width]
+    candidate_starts = tf.boolean_mask(tf.reshape(candidate_starts, [-1]), flattened_candidate_mask) # [num_candidates]
+    candidate_ends = tf.boolean_mask(tf.reshape(candidate_ends, [-1]), flattened_candidate_mask) # [num_candidates]
+  
+    with tf.Session() as sess:
+      starts, ends = sess.run([candidate_starts, candidate_ends])
+    candidate_mention_labels = [int((start, end) in gold_mentions)
+                           for start, end in zip(starts, ends)]
+     
     max_sentence_length = self.max_segment_len
     text_len = np.array([len(s) for s in sentences])
 
@@ -197,7 +214,7 @@ class CorefModel(object):
     genre = self.genres.get(doc_key[:2], 0)
 
     gold_starts, gold_ends = self.tensorize_mentions(gold_mentions)
-    example_tensors = (input_ids, input_mask,  text_len, speaker_ids, genre, is_training, gold_starts, gold_ends, cluster_ids, sentence_map)
+    example_tensors = (input_ids, input_mask,  text_len, speaker_ids, genre, is_training, gold_starts, gold_ends, candidate_mention_labels, cluster_ids, sentence_map)
 
     if is_training and len(sentences) > self.config["max_training_sentences"]:
       if self.config['single_example']:
@@ -209,7 +226,7 @@ class CorefModel(object):
     else:
       return example_tensors
 
-  def truncate_example(self, input_ids, input_mask, text_len, speaker_ids, genre, is_training, gold_starts, gold_ends, cluster_ids, sentence_map, sentence_offset=None):
+  def truncate_example(self, input_ids, input_mask, text_len, speaker_ids, genre, is_training, gold_starts, gold_ends, candidate_mention_labels, cluster_ids, sentence_map, sentence_offset=None):
     max_training_sentences = self.config["max_training_sentences"]
     num_sentences = input_ids.shape[0]
     assert num_sentences > max_training_sentences
@@ -227,8 +244,9 @@ class CorefModel(object):
     gold_starts = gold_starts[gold_spans] - word_offset
     gold_ends = gold_ends[gold_spans] - word_offset
     cluster_ids = cluster_ids[gold_spans]
+    # Not modifying candidate mention labels. I think that the number of candidate mentions generated will be the same later anyway.
 
-    return input_ids, input_mask, text_len, speaker_ids, genre, is_training,  gold_starts, gold_ends, cluster_ids, sentence_map
+    return input_ids, input_mask, text_len, speaker_ids, genre, is_training,  gold_starts, gold_ends, candidate_mention_labels, cluster_ids, sentence_map
 
   def get_candidate_labels(self, candidate_starts, candidate_ends, labeled_starts, labeled_ends, labels):
     same_start = tf.equal(tf.expand_dims(labeled_starts, 1), tf.expand_dims(candidate_starts, 0)) # [num_labeled, num_candidates]
@@ -262,7 +280,7 @@ class CorefModel(object):
     return top_antecedents, top_antecedents_mask, top_fast_antecedent_scores, top_antecedent_offsets
 
 
-  def get_predictions_and_loss(self, input_ids, input_mask, text_len, speaker_ids, genre, is_training, gold_starts, gold_ends, cluster_ids, sentence_map):
+  def get_predictions_and_loss(self, input_ids, input_mask, text_len, speaker_ids, genre, is_training, gold_starts, gold_ends, candidate_mention_labels, cluster_ids, sentence_map):
     model = modeling.BertModel(
       config=self.bert_config,
       is_training=is_training,
@@ -287,12 +305,18 @@ class CorefModel(object):
       candidate_ends = tf.expand_dims(gold_ends, 1)
     else:
       candidate_starts = tf.tile(tf.expand_dims(tf.range(num_words), 1), [1, self.max_span_width]) # [num_words, max_span_width]
+      cs = tf.Print(candidate_starts, [tf.shape(candidate_starts)], "Candidate starts 1")
+      candidate_starts = cs
       candidate_ends = candidate_starts + tf.expand_dims(tf.range(self.max_span_width), 0) # [num_words, max_span_width]
     candidate_start_sentence_indices = tf.gather(flattened_sentence_indices, candidate_starts) # [num_words, max_span_width]
     candidate_end_sentence_indices = tf.gather(flattened_sentence_indices, tf.minimum(candidate_ends, num_words - 1)) # [num_words, max_span_width]
     candidate_mask = tf.logical_and(candidate_ends < num_words, tf.equal(candidate_start_sentence_indices, candidate_end_sentence_indices)) # [num_words, max_span_width]
+    cm = tf.Print(candidate_mask, [tf.shape(candidate_mask)], "Candidate mask 1")
+    candidate_mask = cm
     flattened_candidate_mask = tf.reshape(candidate_mask, [-1]) # [num_words * max_span_width]
     candidate_starts = tf.boolean_mask(tf.reshape(candidate_starts, [-1]), flattened_candidate_mask) # [num_candidates]
+    cs = tf.Print(candidate_starts, [tf.shape(candidate_starts)], "Candidate starts 2")
+    candidate_starts = cs
     candidate_ends = tf.boolean_mask(tf.reshape(candidate_ends, [-1]), flattened_candidate_mask) # [num_candidates]
     candidate_sentence_indices = tf.boolean_mask(tf.reshape(candidate_start_sentence_indices, [-1]), flattened_candidate_mask) # [num_candidates]
 
@@ -300,8 +324,15 @@ class CorefModel(object):
 
     candidate_span_emb = self.get_span_emb(mention_doc, mention_doc, candidate_starts, candidate_ends) # [num_candidates, emb]
     candidate_mention_scores =  self.get_mention_scores(candidate_span_emb, candidate_starts, candidate_ends)
-    candidate_mention_scores = tf.squeeze(candidate_mention_scores, 1) # [k]
+    cms = tf.Print(candidate_mention_scores, [tf.shape(candidate_mention_scores)], "Shape of candidate mention scores:")
+    print("label type", type(candidate_mention_labels))
+    candidate_mention_scores = tf.squeeze(cms, 1) # [k]
 
+  
+    #loss = self.softmax_loss(candidate_mention_scores, candidate_mention_labels)
+    loss = tf.reduce_sum(candidate_mention_scores)
+
+    __THE_REST_IS_ANTECDENT_PREDICTION = """
     # beam size
     # pull from beam
     if self.use_gold_boundaries:
@@ -324,6 +355,8 @@ class CorefModel(object):
     top_span_emb = tf.gather(candidate_span_emb, top_span_indices) # [k, emb]
     top_span_cluster_ids = tf.gather(candidate_cluster_ids, top_span_indices) # [k]
     top_span_mention_scores = tf.gather(candidate_mention_scores, top_span_indices) # [k]
+
+    loss = tf.reduce_sum(top_span_mention_scores)
     genre_emb = tf.gather(tf.get_variable("genre_embeddings", [len(self.genres), self.config["feature_size"]], initializer=tf.truncated_normal_initializer(stddev=0.02)), genre) # [emb]
     if self.config['use_metadata']:
       speaker_ids = self.flatten_emb_by_sentence(speaker_ids, input_mask)
@@ -364,9 +397,9 @@ class CorefModel(object):
     dummy_labels = tf.logical_not(tf.reduce_any(pairwise_labels, 1, keepdims=True)) # [k, 1]
     top_antecedent_labels = tf.concat([dummy_labels, pairwise_labels], 1) # [k, c + 1]
     loss = self.softmax_loss(top_antecedent_scores, top_antecedent_labels) # [k]
-    loss = tf.reduce_sum(loss) # []
+    loss = tf.reduce_sum(loss) # []"""
 
-    return [candidate_starts, candidate_ends, candidate_mention_scores, top_span_starts, top_span_ends, top_antecedents, top_antecedent_scores], loss
+    return [candidate_starts, candidate_ends, candidate_mention_scores], loss
 
 
   def get_span_emb(self, head_emb, context_outputs, span_starts, span_ends):
